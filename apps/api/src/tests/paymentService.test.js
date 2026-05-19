@@ -2,163 +2,131 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createPaymentIntent } from "../services/paymentService.js";
 
-test("createPaymentIntent should create a stripe payment intent", async () => {
-  // Mock stripe instance
-  const mockStripeInstance = {
-    paymentIntents: {
-      create: async function(input) {
-        assert.equal(input.amount, 1000);
-        assert.equal(input.currency, 'usd');
+// We'll create a mock stripe object
+class MockStripe {
+  constructor() {
+    this.lastCreateCallArgs = null;
+    this.paymentIntents = {
+      create: async (args) => {
+        this.lastCreateCallArgs = args;
         return {
           id: 'pi_test_123',
           client_secret: 'secret_test_123',
-          amount: 1000,
-          currency: 'usd'
+          amount: args.amount,
+          currency: args.currency,
         };
       }
-    }
-  };
+    };
+  }
+}
 
-  const payload = {
-    amount: 1000,
-    currency: "usd"
-  };
-  
-  const result = await createPaymentIntent(payload, mockStripeInstance);
-  
-  assert.equal(result.paymentId, 'pi_test_123');
-  assert.equal(result.clientSecret, 'secret_test_123');
+// For error testing
+class MockStripeError extends MockStripe {
+  constructor(errorToThrow) {
+    super();
+    this.errorToThrow = errorToThrow;
+    this.paymentIntents.create = async () => {
+      throw this.errorToThrow;
+    };
+  }
+}
+
+test("createPaymentIntent should throw error if amount is missing", async () => {
+  const stripe = new MockStripe();
+  try {
+    await createPaymentIntent({}, stripe);
+    assert.fail("Expected error for missing amount");
+  } catch (error) {
+    assert.equal(error.message, "Amount is required and must be a positive integer (in smallest currency unit, e.g. cents)");
+  }
+});
+
+test("createPaymentIntent should throw error if amount is not positive", async () => {
+  const stripe = new MockStripe();
+  try {
+    await createPaymentIntent({ amount: 0 }, stripe);
+    assert.fail("Expected error for non-positive amount");
+  } catch (error) {
+    assert.equal(error.message, "Amount is required and must be a positive integer (in smallest currency unit, e.g. cents)");
+  }
+});
+
+test("createPaymentIntent should throw error if amount is not an integer", async () => {
+  const stripe = new MockStripe();
+  try {
+    await createPaymentIntent({ amount: 12.5 }, stripe);
+    assert.fail("Expected error for non-integer amount");
+  } catch (error) {
+    assert.equal(error.message, "Amount is required and must be a positive integer (in smallest currency unit, e.g. cents)");
+  }
+});
+
+test("createPaymentIntent should return paymentId and clientSecret", async () => {
+  const stripe = new MockStripe();
+  const payload = { amount: 1000, currency: "usd" };
+  const result = await createPaymentIntent(payload, stripe);
+
+  assert.equal(result.paymentId, "pi_test_123");
+  assert.equal(result.clientSecret, "secret_test_123");
   assert.equal(result.amount, 1000);
   assert.equal(result.currency, 'usd');
   assert.equal(result.provider, 'stripe');
 });
 
-test("createPaymentIntent should validate amount is required", async () => {
-  let error;
-  try {
-    // We don't need stripe for validation, so we can pass a dummy
-    await createPaymentIntent({}, {});
-  } catch (err) {
-    error = err;
-  }
-  
-  assert.ok(error instanceof Error);
-  assert.equal(error.message, 'Amount is required and must be a positive integer (in smallest currency unit, e.g. cents)');
-});
+test("createPaymentIntent should use default currency", async () => {
+  const stripe = new MockStripe();
+  const payload = { amount: 500 };
+  const result = await createPaymentIntent(payload, stripe);
 
-test("createPaymentIntent should validate amount is positive integer", async () => {
-  let error;
-  try {
-    await createPaymentIntent({ amount: -50 }, {});
-  } catch (err) {
-    error = err;
-  }
-  
-  assert.ok(error instanceof Error);
-  assert.equal(error.message, 'Amount is required and must be a positive integer (in smallest currency unit, e.g. cents)');
-});
-
-test("createPaymentIntent should default currency to usd", async () => {
-  const mockStripeInstance = {
-    paymentIntents: {
-      create: async function(input) {
-        assert.equal(input.amount, 500);
-        assert.equal(input.currency, 'usd');
-        return {
-          id: 'pi_test_123',
-          client_secret: 'secret_test_123',
-          amount: 500,
-          currency: 'usd'
-        };
-      }
-    }
-  };
-
-  const payload = {
-    amount: 500
-  };
-  
-  const result = await createPaymentIntent(payload, mockStripeInstance);
-  
-  assert.equal(result.currency, 'usd');
-});
-
-test("createPaymentIntent should handle stripe errors", async () => {
-  const mockStripeInstance = {
-    paymentIntents: {
-      create: async function() {
-        throw new Error('Card was declined');
-      }
-    }
-  };
-
-  let error;
-  try {
-    await createPaymentIntent({ amount: 1000 }, mockStripeInstance);
-  } catch (err) {
-    error = err;
-  }
-  
-  assert.ok(error instanceof Error);
-  assert.equal(error.message, 'Stripe error: Card was declined');
+  assert.equal(result.paymentId, "pi_test_123");
+  assert.equal(result.clientSecret, "secret_test_123");
+  assert.equal(stripe.lastCreateCallArgs.amount, 500);
+  assert.equal(stripe.lastCreateCallArgs.currency, 'usd');
 });
 
 test("createPaymentIntent should pass metadata to stripe", async () => {
-  let capturedInput = null;
-  const mockStripeInstance = {
-    paymentIntents: {
-      create: async function(input) {
-        capturedInput = input;
-        return {
-          id: 'pi_test_123',
-          client_secret: 'secret_test_123',
-          amount: 1000,
-          currency: 'eur'
-        };
-      }
-    }
-  };
-
+  const stripe = new MockStripe();
   const payload = {
     amount: 1000,
     currency: "eur",
     metadata: { order_id: "order_123" }
   };
-  
-  await createPaymentIntent(payload, mockStripeInstance);
-  
-  assert.equal(capturedInput.amount, 1000);
-  assert.equal(capturedInput.currency, 'eur');
-  assert.deepEqual(capturedInput.metadata, { order_id: "order_123" });
+  await createPaymentIntent(payload, stripe);
+  assert.deepEqual(stripe.lastCreateCallArgs.metadata, { order_id: "order_123" });
 });
 
-test("createPaymentIntent should accept injected stripe instance", async () => {
-  // This test is essentially the same as the first one, but we keep it for clarity
-  const mockStripeInstance = {
-    paymentIntents: {
-      create: async function(input) {
-        assert.equal(input.amount, 2000);
-        assert.equal(input.currency, 'gbp');
-        return {
-          id: 'pi_injected_123',
-          client_secret: 'secret_injected_123',
-          amount: 2000,
-          currency: 'gbp'
-        };
-      }
-    }
-  };
+// Test for Stripe error handling
+test("createPaymentIntent should re-throw Stripe error messages", async () => {
+  const error = new Error('Card declined');
+  error.type = 'StripeCardError';
+  const stripe = new MockStripeError(error);
+  try {
+    await createPaymentIntent({ amount: 100 }, stripe);
+    assert.fail("Expected error to be thrown");
+  } catch (thrownError) {
+    assert.equal(thrownError.message, 'Card declined');
+  }
+});
 
-  const payload = {
-    amount: 2000,
-    currency: "gbp"
-  };
-  
-  const result = await createPaymentIntent(payload, mockStripeInstance);
-  
-  assert.equal(result.paymentId, 'pi_injected_123');
-  assert.equal(result.clientSecret, 'secret_injected_123');
-  assert.equal(result.amount, 2000);
-  assert.equal(result.currency, 'gbp');
-  assert.equal(result.provider, 'stripe');
+test("createPaymentIntent should re-throw Stripe invalid request error", async () => {
+  const error = new Error('Invalid amount');
+  error.type = 'StripeInvalidRequestError';
+  const stripe = new MockStripeError(error);
+  try {
+    await createPaymentIntent({ amount: 100 }, stripe);
+    assert.fail("Expected error to be thrown");
+  } catch (thrownError) {
+    assert.equal(thrownError.message, 'Invalid amount');
+  }
+});
+
+test("createPaymentIntent should handle generic stripe errors", async () => {
+  const error = new Error('Network timeout');
+  const stripe = new MockStripeError(error);
+  try {
+    await createPaymentIntent({ amount: 100 }, stripe);
+    assert.fail("Expected error to be thrown");
+  } catch (thrownError) {
+    assert.equal(thrownError.message, 'Network timeout');
+  }
 });

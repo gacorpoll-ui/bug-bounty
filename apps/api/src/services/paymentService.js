@@ -1,33 +1,52 @@
 import Stripe from 'stripe';
 
-export async function createPaymentIntent(payload, stripeInstance = new Stripe(process.env.STRIPE_SECRET_KEY)) {
-  // Validate amount is required and positive integer
+// Create a Stripe instance that can be overridden for testing
+let _stripe;
+const initializeStripe = () => {
+  if (!_stripe) {
+    _stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+      apiVersion: '2023-10-16',
+    });
+  }
+  return _stripe;
+};
+
+export async function createPaymentIntent(payload, stripeInstance) {
+  const stripe = stripeInstance ?? initializeStripe();
+
+  // Validate amount: required, positive integer
   if (!payload.amount || typeof payload.amount !== 'number' || payload.amount <= 0 || !Number.isInteger(payload.amount)) {
     throw new Error('Amount is required and must be a positive integer (in smallest currency unit, e.g. cents)');
   }
 
-  // Set currency with default
-  const currency = payload.currency ?? "usd";
+  const amount = payload.amount;
+  const currency = payload.currency ?? 'usd';
 
   try {
-    // Create PaymentIntent with Stripe
-    const paymentIntent = await stripeInstance.paymentIntents.create({
-      amount: payload.amount,
-      currency: currency,
+    // Create a PaymentIntent with the order amount and currency
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount,
+      currency,
+      // Automatic payment methods enabled
+      automatic_payment_methods: {
+        enabled: true,
+      },
       // Add any metadata if provided
       ...(payload.metadata && { metadata: payload.metadata })
     });
 
-    // Return clientSecret and paymentId
     return {
       paymentId: paymentIntent.id,
       clientSecret: paymentIntent.client_secret,
       amount: paymentIntent.amount,
       currency: paymentIntent.currency,
-      provider: "stripe"
+      provider: 'stripe',
     };
   } catch (error) {
     // Handle Stripe errors and preserve original message
-    throw new Error(`Stripe error: ${error.message}`);
+    if (error.type === 'StripeCardError' || error.type === 'StripeInvalidRequestError') {
+      throw new Error(error.message);
+    }
+    throw error;
   }
 }
